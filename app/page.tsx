@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { useUser } from "@clerk/nextjs";
 
@@ -9,9 +9,12 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<any[]>([]);
   const [newMessage, setNewMessage] = useState("");
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
+  
+  // This "Ref" keeps the connection alive across the whole page
+  const channelRef = useRef<any>(null);
 
   useEffect(() => {
-    // 1. Fetch existing messages
+    // 1. Get old messages first
     const fetchMessages = async () => {
       const { data } = await supabase
         .from("messages")
@@ -21,14 +24,17 @@ export default function ChatPage() {
     };
     fetchMessages();
 
-    // 2. Set up Realtime & Presence
+    // 2. Start the Realtime "Radio Station"
     const channel = supabase.channel("general-chat", {
-      config: { presence: { key: user?.username || "anonymous" } },
+      config: { presence: { key: user?.username || "Guest" } },
     });
+
+    channelRef.current = channel;
 
     channel
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages" }, 
         (payload) => {
+          // This makes messages appear WITHOUT reloading!
           setMessages((prev) => [...prev, payload.new]);
         }
       )
@@ -36,9 +42,9 @@ export default function ChatPage() {
         const state = channel.presenceState();
         const typing: string[] = [];
         
-        // Loop through everyone in the channel to see who is typing
         Object.values(state).forEach((presences: any) => {
           presences.forEach((p: any) => {
+            // If someone else is typing, add them to the list
             if (p.isTyping && p.user !== user?.username) {
               typing.push(p.user);
             }
@@ -57,6 +63,7 @@ export default function ChatPage() {
     e.preventDefault();
     if (!newMessage.trim()) return;
 
+    // Send to Database
     await supabase.from("messages").insert([
       { 
         content: newMessage, 
@@ -66,46 +73,63 @@ export default function ChatPage() {
     ]);
     
     setNewMessage("");
-    // Stop typing status after sending
-    const channel = supabase.channel("general-chat");
-    channel.track({ user: user?.username, isTyping: false });
+    // Tell others you stopped typing
+    channelRef.current?.track({ user: user?.username, isTyping: false });
   };
 
   const onTyping = (val: string) => {
     setNewMessage(val);
-    const channel = supabase.channel("general-chat");
-    channel.track({ 
-      user: user?.username || "Guest", 
-      isTyping: val.length > 0 
-    });
+    // Broadcast "I am typing" to everyone else
+    if (channelRef.current) {
+      channelRef.current.track({ 
+        user: user?.username || "Guest", 
+        isTyping: val.length > 0 
+      });
+    }
   };
 
   return (
-    <div className="flex flex-col h-screen bg-[#313338] text-white p-4">
-      <div className="flex-1 overflow-y-auto space-y-4">
+    <div className="flex flex-col h-screen bg-[#313338] text-white p-4 font-sans">
+      {/* Header */}
+      <div className="border-b border-gray-800 pb-2 mb-4">
+        <h1 className="text-xl font-bold"># general-chat</h1>
+      </div>
+
+      {/* Messages Area */}
+      <div className="flex-1 overflow-y-auto space-y-3 pr-2">
         {messages.map((msg) => (
-          <div key={msg.id} className="border-b border-gray-700 pb-2">
-            <span className="font-bold text-blue-400">{msg.user_name}: </span>
-            <span>{msg.content}</span>
+          <div key={msg.id} className="group hover:bg-[#2e3035] p-1 rounded">
+            <span className="font-bold text-[#5865F2]">{msg.user_name}</span>
+            <span className="text-gray-400 text-[10px] ml-2">
+               {new Date(msg.created_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+            </span>
+            <p className="text-gray-200">{msg.content}</p>
           </div>
         ))}
       </div>
 
-      {/* Typing Indicator */}
-      <div className="h-6 text-xs text-gray-400 italic">
-        {typingUsers.length === 1 && `${typingUsers[0]} is typing...`}
-        {typingUsers.length === 2 && `${typingUsers[0]} and ${typingUsers[1]} are typing...`}
-        {typingUsers.length > 2 && `Several people are typing...`}
+      {/* Typing Indicator Box */}
+      <div className="h-6 text-xs text-gray-400 italic mb-1 ml-1">
+        {typingUsers.length > 0 && (
+          <span>
+            {typingUsers.length === 1 && `${typingUsers[0]} is typing...`}
+            {typingUsers.length === 2 && `${typingUsers[1]} and ${typingUsers[0]} are typing...`}
+            {typingUsers.length > 2 && `Several people are typing...`}
+          </span>
+        )}
       </div>
 
+      {/* Input Bar */}
       <form onSubmit={handleSendMessage} className="flex gap-2">
         <input
           value={newMessage}
           onChange={(e) => onTyping(e.target.value)}
           placeholder="Message #general"
-          className="flex-1 bg-[#383a40] p-2 rounded outline-none"
+          className="flex-1 bg-[#383a40] p-3 rounded-lg outline-none focus:ring-1 ring-indigo-500"
         />
-        <button type="submit" className="bg-indigo-500 px-4 py-2 rounded">Send</button>
+        <button type="submit" className="bg-[#5865F2] hover:bg-[#4752C4] px-6 py-2 rounded-lg font-bold transition">
+          Send
+        </button>
       </form>
     </div>
   );
