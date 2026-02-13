@@ -14,7 +14,7 @@ export default function ChatPage() {
   const channelRef = useRef<any>(null);
 
   useEffect(() => {
-    // 1. Fetch history
+    // 1. Fetch History
     const fetchMessages = async () => {
       const { data } = await supabase
         .from("messages")
@@ -24,9 +24,10 @@ export default function ChatPage() {
     };
     fetchMessages();
 
-    // 2. Start Realtime & Typing Tracker
-    // Use your firstName or username so it doesn't say "Guest"
-    const myName = user?.firstName || user?.username || "A Member";
+    // 2. Start Realtime & Debugging
+    console.log("Attempting to connect to Realtime..."); 
+
+    const myName = user?.firstName || user?.username || "Guest";
 
     const channel = supabase.channel("general-chat", {
       config: { presence: { key: myName } },
@@ -35,18 +36,19 @@ export default function ChatPage() {
     channelRef.current = channel;
 
     channel
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages" }, 
-        (payload) => {
-          setMessages((prev) => [...prev, payload.new]);
-        }
-      )
+      .on("postgres_changes", { 
+        event: "INSERT", 
+        schema: "public", 
+        table: "messages" 
+      }, (payload) => {
+        console.log("🔥 NEW MESSAGE RECEIVED LIVE!", payload); 
+        setMessages((prev) => [...prev, payload.new]);
+      })
       .on("presence", { event: "sync" }, () => {
         const state = channel.presenceState();
         const typing: string[] = [];
-        
         Object.values(state).forEach((presences: any) => {
           presences.forEach((p: any) => {
-            // Only add to list if they are typing AND it's not you
             if (p.isTyping && p.user !== myName) {
               typing.push(p.user);
             }
@@ -54,7 +56,10 @@ export default function ChatPage() {
         });
         setTypingUsers(typing);
       })
-      .subscribe();
+      .subscribe((status) => {
+        // THIS IS THE MOST IMPORTANT LOG
+        console.log("📡 Realtime Status:", status); 
+      });
 
     return () => {
       supabase.removeChannel(channel);
@@ -65,9 +70,9 @@ export default function ChatPage() {
     e.preventDefault();
     if (!newMessage.trim()) return;
 
-    const myName = user?.firstName || user?.username || "A Member";
+    const myName = user?.firstName || user?.username || "Guest";
 
-    await supabase.from("messages").insert([
+    const { error } = await supabase.from("messages").insert([
       { 
         content: newMessage, 
         user_name: myName,
@@ -75,14 +80,15 @@ export default function ChatPage() {
       },
     ]);
     
+    if (error) console.error("Error sending message:", error);
+
     setNewMessage("");
-    // Stop typing status
     channelRef.current?.track({ user: myName, isTyping: false });
   };
 
   const onTyping = (val: string) => {
     setNewMessage(val);
-    const myName = user?.firstName || user?.username || "A Member";
+    const myName = user?.firstName || user?.username || "Guest";
     
     if (channelRef.current) {
       channelRef.current.track({ 
@@ -95,10 +101,10 @@ export default function ChatPage() {
   return (
     <div className="flex flex-col h-screen bg-[#313338] text-white p-4 font-sans">
       <div className="border-b border-[#26272d] pb-2 mb-4">
-        <h1 className="text-xl font-bold"># general-chat</h1>
+        <h1 className="text-xl font-bold text-gray-100"># general-chat</h1>
       </div>
 
-      <div className="flex-1 overflow-y-auto space-y-3 pr-2 custom-scrollbar">
+      <div className="flex-1 overflow-y-auto space-y-3 pr-2">
         {messages.map((msg) => (
           <div key={msg.id} className="group hover:bg-[#2e3035] p-1 rounded transition">
             <span className="font-bold text-[#5865F2]">{msg.user_name}</span>
@@ -110,7 +116,6 @@ export default function ChatPage() {
         ))}
       </div>
 
-      {/* TYPING INDICATOR AREA */}
       <div className="h-5 text-xs text-gray-400 italic mb-1 ml-1">
         {typingUsers.length > 0 && (
           <span>
@@ -128,7 +133,7 @@ export default function ChatPage() {
           placeholder="Message #general"
           className="flex-1 bg-[#383a40] p-3 rounded-lg outline-none focus:ring-1 ring-[#5865F2]"
         />
-        <button type="submit" className="bg-[#5865F2] hover:bg-[#4752C4] px-6 py-2 rounded-lg font-bold transition">
+        <button type="submit" className="bg-[#5865F2] hover:bg-[#4752C4] px-6 py-2 rounded-lg font-bold">
           Send
         </button>
       </form>
