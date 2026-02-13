@@ -1,25 +1,17 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useUser, UserButton, SignInButton, SignedIn, SignedOut } from "@clerk/nextjs";
 import { supabase } from "@/lib/supabaseClient";
+import { useUser } from "@clerk/nextjs";
 
-// Define what a Message looks like
-interface Message {
-  id: string;
-  content: string;
-  user_name: string;
-  created_at: string;
-}
-
-export default function DiscordClone() {
+export default function ChatPage() {
   const { user } = useUser();
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [inputText, setInputText] = useState("");
+  const [messages, setMessages] = useState<any[]>([]);
+  const [newMessage, setNewMessage] = useState("");
+  const [typingUsers, setTypingUsers] = useState<string[]>([]);
 
-  // 1. Fetch old messages and Listen for new ones
   useEffect(() => {
-    // Get existing messages from the database
+    // 1. Fetch existing messages
     const fetchMessages = async () => {
       const { data } = await supabase
         .from("messages")
@@ -27,92 +19,94 @@ export default function DiscordClone() {
         .order("created_at", { ascending: true });
       if (data) setMessages(data);
     };
-
     fetchMessages();
 
-    // REAL-TIME: Listen for new rows added to the 'messages' table
-    const channel = supabase
-      .channel("realtime-messages")
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "messages" },
+    // 2. Set up Realtime & Presence
+    const channel = supabase.channel("general-chat", {
+      config: { presence: { key: user?.username || "anonymous" } },
+    });
+
+    channel
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages" }, 
         (payload) => {
-          setMessages((prev) => [...prev, payload.new as Message]);
+          setMessages((prev) => [...prev, payload.new]);
         }
       )
+      .on("presence", { event: "sync" }, () => {
+        const state = channel.presenceState();
+        const typing: string[] = [];
+        
+        // Loop through everyone in the channel to see who is typing
+        Object.values(state).forEach((presences: any) => {
+          presences.forEach((p: any) => {
+            if (p.isTyping && p.user !== user?.username) {
+              typing.push(p.user);
+            }
+          });
+        });
+        setTypingUsers(typing);
+      })
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, []);
+  }, [user]);
 
-  // 2. Function to send a message
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inputText.trim() || !user) return;
+    if (!newMessage.trim()) return;
 
-    const { error } = await supabase.from("messages").insert([
-      {
-        content: inputText,
-        user_id: user.id,
-        user_name: user.fullName || user.username || "Anonymous",
+    await supabase.from("messages").insert([
+      { 
+        content: newMessage, 
+        user_name: user?.username || "Guest",
+        user_id: user?.id 
       },
     ]);
+    
+    setNewMessage("");
+    // Stop typing status after sending
+    const channel = supabase.channel("general-chat");
+    channel.track({ user: user?.username, isTyping: false });
+  };
 
-    if (error) {
-      console.error("Error sending:", error.message);
-    } else {
-      setInputText(""); // Clear the box
-    }
+  const onTyping = (val: string) => {
+    setNewMessage(val);
+    const channel = supabase.channel("general-chat");
+    channel.track({ 
+      user: user?.username || "Guest", 
+      isTyping: val.length > 0 
+    });
   };
 
   return (
-    <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: "#313338", color: "white", fontFamily: "sans-serif" }}>
-      {/* Header */}
-      <header style={{ padding: "10px", borderBottom: "1px solid #1e1f22", display: "flex", justifyContent: "space-between" }}>
-        <h3># general-chat</h3>
-        <SignedOut>
-          <SignInButton mode="modal" />
-        </SignedOut>
-        <SignedIn>
-          <UserButton />
-        </SignedIn>
-      </header>
-
-      {/* Message List */}
-      <main style={{ flex: 1, overflowY: "auto", padding: "20px" }}>
+    <div className="flex flex-col h-screen bg-[#313338] text-white p-4">
+      <div className="flex-1 overflow-y-auto space-y-4">
         {messages.map((msg) => (
-          <div key={msg.id} style={{ marginBottom: "15px" }}>
-            <strong style={{ color: "#5865F2" }}>{msg.user_name}</strong>
-            <span style={{ fontSize: "12px", color: "#949ba4", marginLeft: "10px" }}>
-              {new Date(msg.created_at).toLocaleTimeString()}
-            </span>
-            <p style={{ margin: "5px 0 0 0" }}>{msg.content}</p>
+          <div key={msg.id} className="border-b border-gray-700 pb-2">
+            <span className="font-bold text-blue-400">{msg.user_name}: </span>
+            <span>{msg.content}</span>
           </div>
         ))}
-      </main>
+      </div>
 
-      {/* Input Area */}
-      <footer style={{ padding: "20px" }}>
-        <SignedIn>
-          <form onSubmit={handleSendMessage} style={{ display: "flex", gap: "10px" }}>
-            <input
-              type="text"
-              value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              placeholder="Message #general"
-              style={{ flex: 1, padding: "12px", borderRadius: "8px", border: "none", background: "#383a40", color: "white" }}
-            />
-            <button type="submit" style={{ padding: "10px 20px", background: "#5865F2", color: "white", border: "none", borderRadius: "8px", cursor: "pointer" }}>
-              Send
-            </button>
-          </form>
-        </SignedIn>
-        <SignedOut>
-          <p style={{ textAlign: "center", color: "#949ba4" }}>Please sign in to join the chat.</p>
-        </SignedOut>
-      </footer>
+      {/* Typing Indicator */}
+      <div className="h-6 text-xs text-gray-400 italic">
+        {typingUsers.length === 1 && `${typingUsers[0]} is typing...`}
+        {typingUsers.length === 2 && `${typingUsers[0]} and ${typingUsers[1]} are typing...`}
+        {typingUsers.length > 2 && `Several people are typing...`}
+      </div>
+
+      <form onSubmit={handleSendMessage} className="flex gap-2">
+        <input
+          value={newMessage}
+          onChange={(e) => onTyping(e.target.value)}
+          placeholder="Message #general"
+          className="flex-1 bg-[#383a40] p-2 rounded outline-none"
+        />
+        <button type="submit" className="bg-indigo-500 px-4 py-2 rounded">Send</button>
+      </form>
     </div>
   );
 }
